@@ -141,8 +141,60 @@ class TestSemiExplicitDAE(unittest.TestCase):
         info = SemiExplicitDAE.info()
         self.assertEqual(info["type"], "SemiExplicitDAE")
         for p in ("func_dyn", "func_alg", "initial_value", "z0", "jac_z",
-                  "jac_dyn_x", "jac_dyn_z", "jac_alg_x", "tolerance"):
+                  "jac_dyn_x", "jac_dyn_z", "jac_alg_x", "tolerance", "func_out"):
             self.assertIn(p, info["parameters"])
+
+
+    def test_func_out(self):
+        #output function replaces the stacked state [x, z] at the output
+        dae = SemiExplicitDAE(
+            lambda x, z, u, t: -x + z, lambda x, z, u, t: z - x**2, 0.5, 0.25,
+            func_out=lambda x, z, u, t: np.array([x[0] + z[0]])
+            )
+        self.assertEqual(len(dae.outputs), 1)
+
+        dae.set_solver(ESDIRK43, None)
+        dae.update(0.0)
+        self.assertAlmostEqual(float(dae.outputs[0]), 0.5 + 0.25, places=8)
+
+        #reset keeps the output size of the output function
+        dae.reset()
+        self.assertEqual(len(dae.outputs), 1)
+
+
+    def test_no_algebraic_states(self):
+        #empty z reduces the block to a plain ODE without a constraint solve
+        calls = []
+        def f_alg(x, z, u, t):
+            calls.append(1)
+            return np.zeros(0)
+
+        dae = SemiExplicitDAE(
+            lambda x, z, u, t: -x, f_alg, initial_value=[1.0, 2.0], z0=np.zeros(0),
+            jac_z=lambda x, z, u, t: np.zeros((0, 0)),
+            jac_dyn_x=lambda x, z, u, t: -np.eye(2),
+            jac_dyn_z=lambda x, z, u, t: np.zeros((2, 0)),
+            jac_alg_x=lambda x, z, u, t: np.zeros((0, 2))
+            )
+
+        x, u = np.array([1.0, 2.0]), np.array([0.0])
+        self.assertEqual(dae._solve_z(x, u, 0.0).size, 0)
+        np.testing.assert_array_equal(dae.op_dyn.jac_x(x, u, 0.0), -np.eye(2))
+        self.assertEqual(len(calls), 0)
+
+
+    def test_simulation_no_algebraic_states(self):
+        #x' = -x with empty z integrates like the ODE block
+        from pathsim import Simulation
+
+        dae = SemiExplicitDAE(
+            lambda x, z, u, t: -x, lambda x, z, u, t: np.zeros(0),
+            initial_value=[1.0, 2.0], z0=np.zeros(0)
+            )
+        sim = Simulation(blocks=[dae], dt=0.01, Solver=ESDIRK43, log=False)
+        sim.run(1.0)
+
+        np.testing.assert_allclose(dae.engine.state, np.exp(-1.0)*np.array([1.0, 2.0]), rtol=1e-4)
 
 
     def test_tolerance_default(self):
