@@ -324,10 +324,10 @@ class TestSimulation(unittest.TestCase):
         stats = Sim.run(10)
 
         #check stats
-        self.assertEqual(stats["total_steps"], 1001)
+        self.assertEqual(stats["total_steps"], 1000)
             
-        #check internal time progression (fixed step solvers naturally overshoot)
-        self.assertAlmostEqual(Sim.time, 10, 1)
+        #check internal time progression stops at the requested endpoint
+        self.assertAlmostEqual(Sim.time, 10.0)
 
 
 
@@ -478,6 +478,88 @@ class TestSimulationIVP(unittest.TestCase):
 
 
 
+
+
+class TestSimulationRunBoundaries(unittest.TestCase):
+
+    def test_fixed_run_stops_at_aligned_endpoint(self):
+        for dt, duration, steps in [(0.1, 1.0, 10), (0.01, 10.0, 1000),
+                                    (0.2, 2.0, 10)]:
+            with self.subTest(dt=dt, duration=duration):
+                source = Constant(1.0)
+                integrator = Integrator()
+                scope = Scope()
+                simulation = Simulation(
+                    [source, integrator, scope],
+                    [Connection(source, integrator), Connection(integrator, scope)],
+                    dt=dt, log=False
+                    )
+
+                simulation.run(duration, adaptive=False)
+
+                self.assertAlmostEqual(simulation.time / duration, 1.0)
+                self.assertAlmostEqual(integrator.outputs[0] / duration, 1.0)
+                times, _ = scope.read()
+                self.assertEqual(len(times), steps + 1)
+                self.assertEqual(simulation.dt, dt)
+
+
+    def test_fixed_run_keeps_full_steps_for_non_aligned_endpoint(self):
+        for dt, duration, endpoint, steps in [(0.3, 1.0, 1.2, 4),
+                                             (2.0, 1.0, 2.0, 1),
+                                             (0.1, 0.05, 0.1, 1)]:
+            with self.subTest(dt=dt, duration=duration):
+                source = Constant(1.0)
+                integrator = Integrator()
+                scope = Scope()
+                simulation = Simulation(
+                    [source, integrator, scope],
+                    [Connection(source, integrator), Connection(integrator, scope)],
+                    dt=dt, log=False
+                    )
+
+                simulation.run(duration, adaptive=False)
+
+                self.assertAlmostEqual(simulation.time, endpoint)
+                self.assertAlmostEqual(integrator.outputs[0], endpoint)
+                times, _ = scope.read()
+                self.assertEqual(len(times), steps + 1)
+                self.assertEqual(simulation.dt, dt)
+
+
+    def test_streaming_run_stops_at_requested_endpoint(self):
+        simulation = Simulation(dt=0.1, log=False)
+        list(simulation.run_streaming(1.0, adaptive=False))
+        self.assertAlmostEqual(simulation.time, 1.0)
+
+
+    def test_fixed_split_runs_match_single_run(self):
+        source = Constant(1.0)
+        integrator = Integrator()
+        ticks = []
+
+        def sample(time):
+            ticks.append(time)
+            source.value = 2.0 * integrator.outputs[0] + 1.0
+
+        simulation = Simulation(
+            [source, integrator], [Connection(source, integrator)],
+            events=[Schedule(t_start=0.0, t_period=1.0, func_act=sample)],
+            dt=0.1, log=False
+            )
+
+        simulation.run(1.0, adaptive=False)
+        self.assertAlmostEqual(simulation.time, 1.0)
+        simulation.run(1.0, adaptive=False)
+        self.assertAlmostEqual(simulation.time, 2.0)
+        self.assertEqual(ticks, [0.0, 1.0, 2.0])
+        split_output = integrator.outputs[0]
+
+        ticks.clear()
+        simulation.run(2.0, reset=True, adaptive=False)
+        self.assertAlmostEqual(simulation.time, 2.0)
+        self.assertEqual(ticks, [0.0, 1.0, 2.0])
+        self.assertAlmostEqual(integrator.outputs[0], split_output)
 
 
 class TestSimulationEvents(unittest.TestCase):
