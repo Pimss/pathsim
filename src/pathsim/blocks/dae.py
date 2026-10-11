@@ -51,7 +51,10 @@ class SemiExplicitDAE(Block):
         \\dot{x} = f_\\mathrm{dyn}(x, z(x, u, t), u, t)
 
     to the integration engine, so the DAE integrates with any solver, explicit
-    or implicit. The block output is the stacked state :math:`[x, z]`.
+    or implicit. The block output is the stacked state :math:`[x, z]`, or
+    :math:`y = f_\\mathrm{out}(x, z, u, t)` if an output function is supplied.
+    Without algebraic states (empty `z0`) the block reduces to a plain ODE and
+    the constraint solve is skipped.
 
     Note
     ----
@@ -126,6 +129,9 @@ class SemiExplicitDAE(Block):
         convergence tolerance on the residual norm of the algebraic constraint
         solve, loosen it for ill-conditioned constraints whose residual cannot
         reach the default due to roundoff
+    func_out : callable, None
+        optional output function with signature `func_out(x, z, u, t)`, the
+        block output is the stacked state `[x, z]` if `None`
 
     Attributes
     ----------
@@ -148,7 +154,8 @@ class SemiExplicitDAE(Block):
         jac_dyn_x=None,
         jac_dyn_z=None,
         jac_alg_x=None,
-        tolerance=SOL_TOLERANCE_FPI
+        tolerance=SOL_TOLERANCE_FPI,
+        func_out=None
         ):
 
         super().__init__()
@@ -156,6 +163,9 @@ class SemiExplicitDAE(Block):
         #differential and algebraic right hand side functions
         self.func_dyn = func_dyn
         self.func_alg = func_alg
+
+        #optional output function, stacked state [x, z] if 'None'
+        self.func_out = func_out
 
         #convergence tolerance of the algebraic constraint solve
         self.tolerance = tolerance
@@ -187,9 +197,10 @@ class SemiExplicitDAE(Block):
         self.op_dyn = DynamicOperator(func=self._rhs, jac_x=_jac_x)
 
         #pre-size the output register to the stacked state [x, z]
-        self.outputs.update_from_array(
-            np.concatenate([self.initial_value, self.z0])
-            )
+        if self.func_out is None:
+            self.outputs.update_from_array(
+                np.concatenate([self.initial_value, self.z0])
+                )
 
 
     def __len__(self):
@@ -204,10 +215,11 @@ class SemiExplicitDAE(Block):
         """
         super().reset()
         self._z = self.z0.copy()
-        x = self.engine.state if self.engine else self.initial_value
-        self.outputs.update_from_array(
-            np.concatenate([np.atleast_1d(x), self._z])
-            )
+        if self.func_out is None:
+            x = self.engine.state if self.engine else self.initial_value
+            self.outputs.update_from_array(
+                np.concatenate([np.atleast_1d(x), self._z])
+                )
 
 
     def _solve_z(self, x, u, t):
@@ -229,6 +241,10 @@ class SemiExplicitDAE(Block):
         z : array[float]
             algebraic states satisfying the constraint
         """
+        #nothing to solve without algebraic states
+        if self._z.size == 0:
+            return self._z
+
         _func = lambda z: self.func_alg(x, z, u, t)
         _jac = None if self.jac_z is None else (lambda z: self.jac_z(x, z, u, t))
         z, _, _ = solve_root(self.opt, _func, self._z, _jac, tolerance=self.tolerance)
@@ -277,6 +293,8 @@ class SemiExplicitDAE(Block):
         """
         z = self._solve_z(x, u, t)
         fx = np.atleast_2d(self.jac_dyn_x(x, z, u, t))
+        if z.size == 0:
+            return fx
         fz = np.atleast_2d(self.jac_dyn_z(x, z, u, t))
         gx = np.atleast_2d(self.jac_alg_x(x, z, u, t))
         gz = np.atleast_2d(self.jac_z(x, z, u, t))
@@ -285,7 +303,7 @@ class SemiExplicitDAE(Block):
 
     def update(self, t):
         """Eliminate the algebraic states for the current input and expose the
-        stacked state [x, z] at the output.
+        output function, or the stacked state [x, z], at the output.
 
         Parameters
         ----------
@@ -294,9 +312,11 @@ class SemiExplicitDAE(Block):
         """
         x, u = self.engine.state, self.inputs.to_array()
         self._z = self._solve_z(x, u, t)
-        self.outputs.update_from_array(
-            np.concatenate([np.atleast_1d(x), self._z])
-            )
+        if self.func_out is None:
+            y = np.concatenate([np.atleast_1d(x), self._z])
+        else:
+            y = self.func_out(x, self._z, u, t)
+        self.outputs.update_from_array(y)
 
 
     def solve(self, t, dt):
