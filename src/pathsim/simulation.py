@@ -2025,6 +2025,10 @@ class Simulation:
         #main simulation loop
         while self.time < end_time and self._active:
 
+            if not _adaptive and np.isclose(
+                    self.time - start_time, duration, rtol=1e-12, atol=0.0):
+                break
+
             #advance the simulation by one (effective) timestep '_dt'
             try:
                 success, error_norm, scale, *_ = self.timestep(
