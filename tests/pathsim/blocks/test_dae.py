@@ -13,6 +13,7 @@ import numpy as np
 from pathsim.blocks.dae import SemiExplicitDAE, MassMatrixDAE, FullyImplicitDAE
 
 from pathsim.solvers.esdirk43 import ESDIRK43
+from pathsim.optim.anderson import solve_root
 
 from pathsim._constants import SOL_TOLERANCE_FPI
 
@@ -429,6 +430,30 @@ class TestMassMatrixDAE(unittest.TestCase):
             )
         sim.run(20.0)
         np.testing.assert_allclose(dae.outputs.to_array(), [1.0, 1.0], atol=1e-3)
+        
+    def test_algebraic_equations_are_not_state_indices(self):
+        """Use equation rows, not state columns, to solve constraints."""
+        #x1' = 3*x0 - x1 + u; 0 = x0 - 2*x1. Equation/state indices differ.
+        def func(x, u, t):
+            return np.array([3 * x[0] - x[1] + u[0], x[0] - 2 * x[1]])
+
+        def jac(x, u, t):
+            return np.array([[3.0, -1.0], [1.0, -2.0]])
+
+        for jacobian in (None, jac):
+            with self.subTest(analytical_jacobian=jacobian is not None):
+                block = MassMatrixDAE(func=func, mass=[[0.0, 1.0], [0.0, 0.0]], initial_value=[0.0, 0.0], jac=jacobian)
+                inputs = np.array([1.0])
+                for x1 in (0.0, 0.25):
+                    differential = np.array([x1])
+                    with unittest.mock.patch("pathsim.blocks.dae.solve_root", wraps=solve_root) as solve:
+                        algebraic = block._solve_xa(differential, inputs, 0.0)
+                    if jacobian is not None:
+                        constraint_jacobian = solve.call_args.args[3]
+                        np.testing.assert_allclose(constraint_jacobian(algebraic), [[1.0]], atol=1e-12)
+                    np.testing.assert_allclose(algebraic, [2 * x1], atol=1e-12)
+                    np.testing.assert_allclose(block._rhs(differential, inputs, 0.0), [5 * x1 + 1], atol=1e-12)
+
 
 
 class TestFullyImplicitDAE(unittest.TestCase):
