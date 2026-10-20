@@ -118,6 +118,9 @@ class Delay(Block):
 
             #internal scheduled event for periodic sampling
             def _sample(t):
+                #publish the delayed sample before evaluating the new input
+                if len(self._ring) > self._n:
+                    self._ring.popleft()
                 self._sample_next_timestep = True
 
             self.events = [
